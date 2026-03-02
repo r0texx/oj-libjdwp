@@ -135,6 +135,9 @@ cc_library {
         "src/share/back/*.c",
         "src/solaris/back/*.c",
     ],
+    shared_libs: [
+        "liblog"
+    ],
     cflags: [
         "-DLINUX",
         "-DJDWP_LOGGING",

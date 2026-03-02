@@ -38,7 +38,6 @@ jvmtiError eventFilterRestricted_install(HandlerNode *node);
 jvmtiError eventFilterRestricted_deinstall(HandlerNode *node);
 
 jboolean eventFilterRestricted_passesFilter(JNIEnv *env,
-                                            char *classname,
                                             EventInfo *evinfo,
                                             HandlerNode *node,
                                             jboolean *shouldDelete);

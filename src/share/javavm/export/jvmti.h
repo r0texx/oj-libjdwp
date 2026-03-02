@@ -1781,6 +1781,12 @@ typedef struct jvmtiInterface_1_ {
     jint depth,
     jobject* value_ptr);
 
+  /*   156 : SCANNER: Get Method Annotation Types */
+  jvmtiError (JNICALL *GetMethodAnnotationTypes) (jvmtiEnv* env,
+    jmethodID mid,
+    jint* count,
+    jclass** out_types);
+
 } jvmtiInterface_1;
 
 struct _jvmtiEnv {
@@ -2042,6 +2048,12 @@ struct _jvmtiEnv {
             jint depth,
             jobject* value_ptr) {
     return functions->GetLocalInstance(this, thread, depth, value_ptr);
+  }
+
+  jvmtiError GetMethodAnnotationTypes(jmethodID mid,
+    jint* count,
+    jclass** out_types) {
+    return functions->GetMethodAnnotationTypes(this, mid, count, out_types);
   }
 
   jvmtiError GetLocalInt(jthread thread,

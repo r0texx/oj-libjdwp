@@ -40,6 +40,10 @@
 #include "threadControl.h"
 #include "SDE.h"
 #include "jvmti.h"
+#include "StackTraceFilters.h"
+#include "ThreadNameFilters.h"
+
+#include <android/log.h>
 
 typedef struct ClassFilter {
     jclass clazz;
@@ -92,6 +96,12 @@ typedef struct SourceNameFilter {
     char *sourceNamePattern;
 } SourceNameFilter;
 
+// SCANNER ADDED
+typedef struct MethodFilter {
+    jclass clazz;
+    jmethodID method;
+} MethodFilter;
+
 typedef struct Filter_ {
     jbyte modifier;
     union {
@@ -107,6 +117,9 @@ typedef struct Filter_ {
         struct MatchFilter ClassMatch;
         struct MatchFilter ClassExclude;
         struct SourceNameFilter SourceNameOnly;
+
+        // SCANNER ADDED
+        struct MethodFilter MethodOnly;
     } u;
 } Filter;
 
@@ -141,6 +154,20 @@ typedef struct EventFilterPrivate_HandlerNode_ {
 #define NODE_EI(node)          (node->ei)
 
 /***** filter set-up / destruction *****/
+
+/* Apply global stack filters only to these event kinds */
+static inline jboolean ShouldApplyCustomFilters(const EventInfo* evinfo) {
+    switch (evinfo->ei) {
+        case EI_METHOD_ENTRY:
+        case EI_METHOD_EXIT:
+        case EI_BREAKPOINT:
+        case EI_FIELD_ACCESS:
+        case EI_FIELD_MODIFICATION:
+            return JNI_TRUE;
+        default:
+            return JNI_FALSE;
+    }
+}
 
 /**
  * Allocate a HandlerNode.
@@ -227,6 +254,10 @@ clearFilters(HandlerNode *node)
                 }
                 break;
             }
+            // SCANNER ADDED
+            case JDWP_REQUEST_MODIFIER(MethodOnly):
+                tossGlobalRef(env, &(filter->u.MethodOnly.clazz));
+                break;
         }
     }
     if (error == JVMTI_ERROR_NONE) {
@@ -372,7 +403,6 @@ eventInstance(EventInfo *evinfo)
  */
 jboolean
 eventFilterRestricted_passesFilter(JNIEnv *env,
-                                   char *classname,
                                    EventInfo *evinfo,
                                    HandlerNode *node,
                                    jboolean *shouldDelete)
@@ -387,16 +417,6 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
     thread = evinfo->thread;
     clazz = evinfo->clazz;
     method = evinfo->method;
-
-    /*
-     * Suppress most events if they happen in debug threads
-     */
-    if ((evinfo->ei != EI_CLASS_PREPARE) &&
-        (evinfo->ei != EI_GC_FINISH) &&
-        (evinfo->ei != EI_CLASS_LOAD) &&
-        threadControl_isDebugThread(thread)) {
-        return JNI_FALSE;
-    }
 
     for (i = 0; i < FILTER_COUNT(node); ++i, ++filter) {
         switch (filter->modifier) {
@@ -416,16 +436,25 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
                 }
                 break;
 
+            // SCANNER ADDED
+            case JDWP_REQUEST_MODIFIER(MethodOnly):
+                /* Method filters catch events in the specified
+                 * method.
+                 */
+                if (method != filter->u.MethodOnly.method) {
+                    return JNI_FALSE;
+                }
+                break;
+
             /* This is kinda cheating assumming the event
              * fields will be in the same locations, but it is
              * true now.
              */
             case JDWP_REQUEST_MODIFIER(LocationOnly):
-                if  (evinfo->method !=
-                          filter->u.LocationOnly.method ||
-                     evinfo->location !=
-                          filter->u.LocationOnly.location ||
-                     !isSameObject(env, clazz, filter->u.LocationOnly.clazz)) {
+                if  (method != filter->u.LocationOnly.method) {
+                    return JNI_FALSE;
+                }
+                if  (evinfo->location != filter->u.LocationOnly.location) {
                     return JNI_FALSE;
                 }
                 break;
@@ -434,10 +463,7 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
                 /* Field watchpoints can be triggered from the
                  * declared class or any subclass/subinterface.
                  */
-                if ((evinfo->u.field_access.field !=
-                     filter->u.FieldOnly.field) ||
-                    !isSameObject(env, evinfo->u.field_access.field_clazz,
-                               filter->u.FieldOnly.clazz)) {
+                if (evinfo->u.field_access.field != filter->u.FieldOnly.field) {
                     return JNI_FALSE;
                 }
                 break;
@@ -492,16 +518,22 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
                 break;
 
         case JDWP_REQUEST_MODIFIER(ClassMatch): {
-            if (!patternStringMatch(classname,
-                       filter->u.ClassMatch.classPattern)) {
+            char* classname = getClassname(clazz);
+            jboolean result = patternStringMatch(classname, filter->u.ClassMatch.classPattern);
+            jvmtiDeallocate(classname);
+
+            if (!result) {
                 return JNI_FALSE;
             }
             break;
         }
 
         case JDWP_REQUEST_MODIFIER(ClassExclude): {
-            if (patternStringMatch(classname,
-                      filter->u.ClassExclude.classPattern)) {
+            char* classname = getClassname(clazz);
+            jboolean result = patternStringMatch(classname, filter->u.ClassExclude.classPattern);
+            jvmtiDeallocate(classname);
+
+            if (result) {
                 return JNI_FALSE;
             }
             break;
@@ -546,6 +578,27 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
             return JNI_FALSE;
         }
     }
+
+    /*
+     * Suppress most events if they happen in debug threads
+     */
+    if ((evinfo->ei != EI_CLASS_PREPARE) &&
+        (evinfo->ei != EI_GC_FINISH) &&
+        (evinfo->ei != EI_CLASS_LOAD) &&
+        threadControl_isDebugThread(thread)) {
+        return JNI_FALSE;
+    }
+
+    // SCANNER ADDED
+    if (thread != NULL && ShouldApplyCustomFilters(evinfo)) {
+        if (JDWP_ShouldSuppressByThreadName(env, thread)) {
+            return JNI_FALSE;
+        }
+        if (JDWP_ShouldSuppressForStack(env, evinfo, thread)) {
+            return JNI_FALSE;
+        }
+    }
+
     return JNI_TRUE;
 }
 
@@ -820,6 +873,33 @@ eventFilter_setClassOnlyFilter(HandlerNode *node, jint index,
     /* the end of this call */
     saveGlobalRef(env, clazz, &(filter->clazz));
     FILTER(node, index).modifier = JDWP_REQUEST_MODIFIER(ClassOnly);
+    return JVMTI_ERROR_NONE;
+}
+
+
+// SCANNER ADDED
+jvmtiError
+eventFilter_setMethodOnlyFilter(HandlerNode *node, jint index,
+                               jclass clazz, jmethodID method)
+{
+    JNIEnv *env = getEnv();
+    MethodFilter *filter = &FILTER(node, index).u.MethodOnly;
+    if (index >= FILTER_COUNT(node)) {
+        return AGENT_ERROR_ILLEGAL_ARGUMENT;
+    }
+    if (
+        (NODE_EI(node) == EI_GC_FINISH) ||
+        (NODE_EI(node) == EI_THREAD_START) ||
+        (NODE_EI(node) == EI_THREAD_END)) {
+
+        return AGENT_ERROR_ILLEGAL_ARGUMENT;
+    }
+
+    /* Create a class ref that will live beyond */
+    /* the end of this call */
+    saveGlobalRef(env, clazz, &(filter->clazz));
+    FILTER(node, index).modifier = JDWP_REQUEST_MODIFIER(MethodOnly);
+    filter->method = method;
     return JVMTI_ERROR_NONE;
 }
 

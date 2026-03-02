@@ -32,6 +32,7 @@
 #include "invoker.h"
 #include "bag.h"
 
+#include <pthread.h> // SCANNER ADDED: for pthread_key_t TLS cache
 #define HANDLING_EVENT(node) ((node)->current_ei != 0)
 
 /*
@@ -104,6 +105,19 @@ static jrawMonitorID popFrameEventLock = NULL;
 static jrawMonitorID popFrameProceedLock = NULL;
 
 static jrawMonitorID threadLock;
+
+/* SCANNER ADDED: Per-thread cache for getThreadLocalStorage result.
+ * Uses POSIX pthread_key_t (not __thread) because libjdwp.so is loaded
+ * via dlopen and __thread may not work in that context on Android.
+ * pthread_getspecific/pthread_setspecific are pure bionic calls that
+ * do NOT trigger ART's cooperative SuspendCheck.
+ *
+ * Set at the top of event handler entry/exit (before any locks),
+ * used by findThread() to avoid JVMTI GetThreadLocalStorage under
+ * threadLock. Cleared after locks are released.
+ */
+static pthread_key_t findThreadCacheKey;
+
 static jlocation resumeLocation;
 static HandlerNode *breakpointHandlerNode;
 static HandlerNode *framePopHandlerNode;
@@ -227,8 +241,16 @@ findThread(ThreadList *list, jthread thread)
 {
     ThreadNode *node;
 
-    /* Get thread local storage for quick thread -> node access */
-    node = getThreadLocalStorage(thread);
+    /* SCANNER ADDED: Check per-thread cache first to avoid JVMTI
+     * GetThreadLocalStorage under threadLock. pthread_getspecific
+     * is a pure bionic call — no ART SuspendCheck.
+     */
+    node = (ThreadNode *)pthread_getspecific(findThreadCacheKey);
+
+    /* Fall back to JVMTI GetThreadLocalStorage if no cache hit */
+    if (node == NULL) {
+        node = getThreadLocalStorage(thread);
+    }
 
     /* In some rare cases we might get NULL, so we check the list manually for
      *   any threads that we could match.
@@ -256,6 +278,38 @@ findThread(ThreadList *list, jthread thread)
         return NULL;
     }
     return node;
+}
+
+/* SCANNER ADDED: Check if current thread is inside invoker_doInvoke.
+ * Uses only pthread_getspecific (bionic, no SuspendCheck) to read
+ * the cached ThreadNode, then checks InvokeRequest.started.
+ * Called from event_callback to suppress recursive events during invoke.
+ */
+jboolean
+threadControl_isInsideInvoke(void)
+{
+    ThreadNode *node = (ThreadNode *)pthread_getspecific(findThreadCacheKey);
+    if (node != NULL) {
+        return node->currentInvoke.started;
+    }
+    return JNI_FALSE;
+}
+
+/* SCANNER ADDED: Set/clear per-thread cache for use during invoker_doInvoke.
+ * Called from event_callback to keep findThreadCacheKey alive so that
+ * threadControl_isInsideInvoke() can detect recursive event callbacks.
+ * getThreadLocalStorage is safe here because no locks are held.
+ */
+void
+threadControl_setEventCache(jthread thread)
+{
+    pthread_setspecific(findThreadCacheKey, getThreadLocalStorage(thread));
+}
+
+void
+threadControl_clearEventCache(void)
+{
+    pthread_setspecific(findThreadCacheKey, NULL);
 }
 
 /* Remove a ThreadNode from a ThreadList */
@@ -358,6 +412,7 @@ insertThread(JNIEnv *env, ThreadList *list, jthread thread)
 
     return node;
 }
+
 
 static void
 clearThread(JNIEnv *env, ThreadNode *node)
@@ -572,6 +627,8 @@ threadControl_initialize(void)
     otherThreads.first = NULL;
     debugThreadCount = 0;
     threadLock = debugMonitorCreate("JDWP Thread Lock");
+    /* SCANNER ADDED: Initialize POSIX TLS key for findThread cache */
+    (void)pthread_key_create(&findThreadCacheKey, NULL);
     if (gdata->threadClass==NULL) {
         EXIT_ERROR(AGENT_ERROR_NULL_POINTER, "no java.lang.thread class");
     }
@@ -2046,9 +2103,19 @@ threadControl_onEventHandlerEntry(jbyte sessionID, EventIndex ei, jthread thread
 
     log_debugee_location("threadControl_onEventHandlerEntry()", thread, NULL, 0);
 
+    /* SCANNER ADDED: Pre-fetch JVMTI ThreadLocalStorage into per-thread
+     * cache BEFORE any code that acquires threadLock (including
+     * checkForPopFrameEvents -> getPopFrameThread). This way findThread()
+     * will use the cached value instead of calling GetThreadLocalStorage
+     * under the lock, avoiding ART SuspendCheck deadlocks.
+     */
+    pthread_setspecific(findThreadCacheKey, getThreadLocalStorage(thread));
+
     /* Events during pop commands may need to be ignored here. */
     consumed = checkForPopFrameEvents(env, ei, thread);
     if ( consumed ) {
+        /* SCANNER ADDED: Clear the cache before returning */
+        pthread_setspecific(findThreadCacheKey, NULL);
         /* Always restore any exception (see below). */
         if (currentException != NULL) {
             JNI_FUNC_PTR(env,Throw)(env, currentException);
@@ -2093,6 +2160,9 @@ threadControl_onEventHandlerEntry(jbyte sessionID, EventIndex ei, jthread thread
         threadToSuspend = node->thread;
     }
     debugMonitorExit(threadLock);
+
+    /* SCANNER ADDED: Clear the per-thread cache */
+    pthread_setspecific(findThreadCacheKey, NULL);
 
     if (threadToSuspend != NULL) {
         /*
@@ -2140,6 +2210,11 @@ threadControl_onEventHandlerExit(EventIndex ei, jthread thread,
 
     log_debugee_location("threadControl_onEventHandlerExit()", thread, NULL, 0);
 
+    /* SCANNER ADDED: Pre-fetch TLS into per-thread cache before
+     * acquiring threadLock (same rationale as in onEventHandlerEntry).
+     */
+    pthread_setspecific(findThreadCacheKey, getThreadLocalStorage(thread));
+
     if (ei == EI_THREAD_END) {
         eventHandler_lock(); /* for proper lock order */
     }
@@ -2173,6 +2248,10 @@ threadControl_onEventHandlerExit(EventIndex ei, jthread thread,
     }
 
     debugMonitorExit(threadLock);
+
+    /* SCANNER ADDED: Clear the per-thread cache */
+    pthread_setspecific(findThreadCacheKey, NULL);
+
     if (ei == EI_THREAD_END) {
         eventHandler_unlock();
     }

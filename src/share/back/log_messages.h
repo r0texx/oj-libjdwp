@@ -45,7 +45,8 @@ void finish_logging();
                 (log_message_begin(flavor,THIS_FILE,__LINE__), \
                  log_message_end args)
 
-    #define LOG_TEST(flag)  (gdata->log_flags & (flag))
+    //#define LOG_TEST(flag)  (gdata->log_flags & (flag))
+    #define LOG_TEST(flag)  (false)
 
     #define LOG_JVM(args)   \
         (LOG_TEST(JDWP_LOG_JVM)  ?_LOG("JVM",  args):LOG_NULL)

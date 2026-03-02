@@ -40,7 +40,6 @@
 // ANDROID-CHANGED: Needed for sending ART timings
 #include "timing.h"
 
-
 static void JNICALL reader(jvmtiEnv* jvmti_env, JNIEnv* jni_env, void* arg);
 static void enqueue(jdwpPacket *p);
 static jboolean dequeue(jdwpPacket *p);
@@ -55,6 +54,19 @@ static volatile struct PacketList *cmdQueue;
 static jrawMonitorID cmdQueueLock;
 static jrawMonitorID vmDeathLock;
 static jboolean transportError;
+
+/* SCANNER ADDED: Per-thread flag to track whether we are inside a command handler.
+ * Uses __thread so only the calling thread's own flag is visible.
+ * This matters because eventHelper_reportEvents can be called from any thread,
+ * but only the debugLoop thread (JDWP Transport) would deadlock if it waited.
+ */
+static __thread jboolean insideCommandHandler = JNI_FALSE;
+
+jboolean
+debugLoop_isInCommandHandler(void)
+{
+    return insideCommandHandler;
+}
 
 static jboolean
 lastCommand(jdwpCmdPacket *cmd)
@@ -176,8 +188,10 @@ debugLoop_run(void)
                  */
                 outStream_setError(&out, JDWP_ERROR(VM_DEAD));
             } else {
+                insideCommandHandler = JNI_TRUE; // SCANNER ADDED
                 /* Call the command handler */
                 replyToSender = func(&in, &out);
+                insideCommandHandler = JNI_FALSE; // SCANNER ADDED
             }
 
             // ANDROID-CHANGED: Tell vmDebug we are done with the current debugger activity.

@@ -384,6 +384,24 @@ skipEventReport(JNIEnv *env, jthread thread, EventIndex ei,
     return skipping;
 }
 
+/* SCANNER ADDED: Execute pending method invocations for the given thread.
+ * Sets up per-thread cache so threadControl_isInsideInvoke() can detect
+ * recursive event_callback calls and suppress them.
+ */
+static void
+handlePendingInvokes(jbyte sessionID, jthread thread)
+{
+    jboolean invoking;
+    do {
+        threadControl_setEventCache(thread);
+        invoking = invoker_doInvoke(thread);
+        threadControl_clearEventCache();
+        if (invoking) {
+            eventHelper_reportInvokeDone(sessionID, thread);
+        }
+    } while (invoking);
+}
+
 static void
 reportEvents(JNIEnv *env, jbyte sessionID, jthread thread, EventIndex ei,
              jclass clazz, jmethodID method, jlocation location,
@@ -435,21 +453,7 @@ reportEvents(JNIEnv *env, jbyte sessionID, jthread thread, EventIndex ei,
         } else {
             suspendPolicy = eventHelper_reportEvents(sessionID, completedBag);
             if (thread != NULL && suspendPolicy != JDWP_SUSPEND_POLICY(NONE)) {
-                do {
-                    /* The events have been reported and this
-                     * thread is about to continue, but it may
-                     * have been started up up just to perform a
-                     * requested method invocation. If so, we do
-                     * the invoke now and then stop again waiting
-                     * for another continue. By then another
-                     * invoke request can be in place, so there is
-                     * a loop around this code.
-                     */
-                    invoking = invoker_doInvoke(thread);
-                    if (invoking) {
-                        eventHelper_reportInvokeDone(sessionID, thread);
-                    }
-                } while (invoking);
+                handlePendingInvokes(sessionID, thread);
             }
             bagDestroyBag(completedBag);
         }
@@ -560,6 +564,23 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
     currentException = JNI_FUNC_PTR(env,ExceptionOccurred)(env);
     JNI_FUNC_PTR(env,ExceptionClear)(env);
 
+    /* SCANNER ADDED: If this is a recursive event_callback during
+     * invoker_doInvoke, silently consume the event. Otherwise the
+     * event handler would suspend the thread, preventing the
+     * InvokeMethod from completing and its reply from being sent
+     * to the debugger — causing the debugger to hang forever.
+     */
+    if (evinfo->thread != NULL && threadControl_isInsideInvoke()) {
+        if (evinfo->ei != EI_VM_DEATH && evinfo->ei != EI_THREAD_END) {
+            if (currentException != NULL) {
+                JNI_FUNC_PTR(env,Throw)(env, currentException);
+            } else {
+                JNI_FUNC_PTR(env,ExceptionClear)(env);
+            }
+            return;
+        }
+    }
+
     /* See if a garbage collection finish event happened earlier.
      *
      * Note: The "if" is an optimization to avoid entering the lock on every
@@ -607,22 +628,7 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
         eventBag = threadControl_onEventHandlerEntry(eventSessionID,
                                  evinfo->ei, thread, currentException);
         if ( eventBag == NULL ) {
-            jboolean invoking;
-            do {
-                /* The event has been 'handled' and this
-                 * thread is about to continue, but it may
-                 * have been started up just to perform a
-                 * requested method invocation. If so, we do
-                 * the invoke now and then stop again waiting
-                 * for another continue. By then another
-                 * invoke request can be in place, so there is
-                 * a loop around this code.
-                 */
-                invoking = invoker_doInvoke(thread);
-                if (invoking) {
-                    eventHelper_reportInvokeDone(eventSessionID, thread);
-                }
-            } while (invoking);
+            handlePendingInvokes(eventSessionID, thread);
             return; /* Do nothing, event was consumed */
         }
     } else {
@@ -638,7 +644,6 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
     debugMonitorEnter(handlerLock);
     {
         HandlerNode *node;
-        char        *classname;
 
         /* We must keep track of all classes prepared to know what's unloaded */
         if (evinfo->ei == EI_CLASS_PREPARE) {
@@ -646,14 +651,13 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
         }
 
         node = getHandlerChain(evinfo->ei)->first;
-        classname = getClassname(evinfo->clazz);
 
         while (node != NULL) {
             /* save next so handlers can remove themselves */
             HandlerNode *next = NEXT(node);
             jboolean shouldDelete;
 
-            if (eventFilterRestricted_passesFilter(env, classname,
+            if (eventFilterRestricted_passesFilter(env,
                                                    evinfo, node,
                                                    &shouldDelete)) {
                 HandlerFunction func;
@@ -672,7 +676,6 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
             }
             node = next;
         }
-        jvmtiDeallocate(classname);
     }
     debugMonitorExit(handlerLock);
 
@@ -1471,7 +1474,6 @@ eventHandler_initialize(jbyte sessionID)
     callbackBlock = debugMonitorCreate("JDWP Callback Block");
 
     handlerLock = debugMonitorCreate("JDWP Event Handler Lock");
-
     for (i = EI_min; i <= EI_max; ++i) {
         getHandlerChain(i)->first = NULL;
     }

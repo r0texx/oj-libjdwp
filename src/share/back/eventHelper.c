@@ -28,7 +28,7 @@
 #include "eventHandler.h"
 #include "threadControl.h"
 #include "invoker.h"
-
+#include "debugLoop.h" // SCANNER ADDED
 /*
  * Event helper thread command commandKinds
  */
@@ -988,6 +988,19 @@ eventHelper_reportEvents(jbyte sessionID, struct bag *eventBag)
      */
     wait = (jboolean)((suspendPolicy != JDWP_SUSPEND_POLICY(NONE)) ||
                       reportingVMDeath);
+
+    /* SCANNER ADDED: If we are currently inside a JDWP command handler
+     * (on the debugLoop thread), waiting here would deadlock: the event
+     * helper thread needs the command thread to be free to process its
+     * queue, but the command thread is us and we'd be blocked here.
+     * This happens when e.g. GetLocalVariable triggers class loading
+     * via the verifier, which fires a ClassPrepare callback.
+     * Enqueue the event without waiting — it will still be delivered.
+     */
+    if (debugLoop_isInCommandHandler()) {
+        wait = JNI_FALSE;
+    }
+
     enqueueCommand(command, wait, reportingVMDeath);
     return suspendPolicy;
 }

@@ -75,4 +75,10 @@ jvmtiError eventFilter_setSourceNameMatchFilter(HandlerNode *node,
 jboolean eventFilter_predictFiltering(HandlerNode *node, jclass clazz, char *classname);
 jboolean isBreakpointSet(jclass clazz, jmethodID method, jlocation location);
 
+// SCANNER ADDED
+jvmtiError eventFilter_setMethodOnlyFilter(HandlerNode *node,
+                                    jint index,
+                                    jclass clazz,
+                                    jmethodID method);
+
 #endif /* _EVENT_FILTER_H */

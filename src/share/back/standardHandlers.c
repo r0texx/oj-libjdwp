@@ -68,7 +68,10 @@ handleClassPrepare(JNIEnv *env, EventInfo *evinfo,
     if (threadControl_isDebugThread(thread)) {
         evinfo->thread = NULL;
         if (node->suspendPolicy == JDWP_SUSPEND_POLICY(EVENT_THREAD)) {
-            node->suspendPolicy = JDWP_SUSPEND_POLICY(ALL);
+            /* SCANNER CHANGED: ALL -> NONE to prevent suspendAll from
+             * double-suspending threads already suspended at breakpoints,
+             * which causes invoke deadlocks (suspendCount 2->1, no JVMTI resume) */
+            node->suspendPolicy = JDWP_SUSPEND_POLICY(NONE);
         }
     }
     eventHelper_recordEvent(evinfo, node->handlerID,

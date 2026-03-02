@@ -30,4 +30,11 @@ void debugLoop_initialize(void);
 void debugLoop_run(void);
 void debugLoop_sync(void);
 
+/* SCANNER ADDED: Returns JNI_TRUE if the current thread is inside
+ * a JDWP command handler. Used to avoid deadlocks when event callbacks
+ * (e.g. ClassPrepare) are triggered re-entrantly from command processing
+ * (e.g. GetLocalVariable triggering class loading via the verifier).
+ */
+jboolean debugLoop_isInCommandHandler(void);
+
 #endif

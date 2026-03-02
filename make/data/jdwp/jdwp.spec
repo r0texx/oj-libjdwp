@@ -2467,6 +2467,11 @@ JDWP "Java(tm) Debug Wire Protocol"
                                 "\"*.Foo\" or \"java.*\". "
                         )
                     )
+                    (Alt MethodOnly=14
+                        "MethodOnly"
+
+                        (method methodID "Method ID.")
+                    )
 
                 )
             )

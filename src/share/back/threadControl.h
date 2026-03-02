@@ -55,6 +55,9 @@ jvmtiError threadControl_resumeAll(void);
 StepRequest *threadControl_getStepRequest(jthread);
 InvokeRequest *threadControl_getInvokeRequest(jthread);
 
+jboolean threadControl_isInsideInvoke(void); // SCANNER ADDED
+void threadControl_setEventCache(jthread thread); // SCANNER ADDED
+void threadControl_clearEventCache(void); // SCANNER ADDED
 jboolean threadControl_isDebugThread(jthread thread);
 jvmtiError threadControl_addDebugThread(jthread thread);
 

@@ -231,10 +231,54 @@ isObsolete(PacketInputStream *in, PacketOutputStream *out)
     return JNI_TRUE;
 }
 
-void *Method_Cmds[] = { (void *)0x5
+// SCANNER ADDED
+static jboolean SCANNER_annotationTypes(PacketInputStream *in, PacketOutputStream *out) {
+    JNIEnv *env = getEnv();
+    jvmtiEnv* jvmti = gdata->jvmti;
+
+    /* JVMDI needed the class, but JVMTI does not so we ignore it */
+    (void)inStream_readClassRef(env, in);
+    if (inStream_error(in)) {
+        return JNI_TRUE;
+    }
+    jmethodID method = inStream_readMethodID(in);
+    if (inStream_error(in)) {
+        return JNI_TRUE;
+    }
+
+    // parse annotations
+    WITH_LOCAL_REFS(env, 1) {
+
+        jint count = 0;
+        jclass* types = NULL;
+        jvmtiError error = JVMTI_FUNC_PTR(jvmti,GetMethodAnnotationTypes)(jvmti, method, &count, &types);
+        if (error == JVMTI_ERROR_NONE) {
+            outStream_writeInt(out, count);
+            for (int i = 0; i < count; ++i) {
+                jclass clazz = types[i];
+                jint status = classStatus(clazz);
+                jbyte tag = referenceTypeTag(clazz);
+
+                (void)outStream_writeByte(out, tag);
+                (void)outStream_writeObjectRef(env, out, clazz);
+                (void)outStream_writeInt(out, map2jdwpClassStatus(status));
+            }
+        } else {
+            outStream_setError(out, map2jdwpError(error));
+        }
+
+        jvmtiDeallocate((unsigned char*)types);
+
+    } END_WITH_LOCAL_REFS(env);
+
+    return JNI_TRUE;
+}
+
+void *Method_Cmds[] = { (void *)6
     ,(void *)lineTable
     ,(void *)variableTable
     ,(void *)bytecodes
     ,(void *)isObsolete
     ,(void *)variableTableWithGenerics
+    ,(void *)SCANNER_annotationTypes
 };

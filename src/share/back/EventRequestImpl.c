@@ -130,6 +130,21 @@ readAndSetFilters(JNIEnv *env, PacketInputStream *in, HandlerNode *node,
                 break;
             }
 
+            // SCANNER ADDED
+            case JDWP_REQUEST_MODIFIER(MethodOnly): {
+                jclass clazz;
+                jmethodID method;
+                clazz = inStream_readClassRef(env, in);
+                if ( (serror = inStream_error(in)) != JDWP_ERROR(NONE) )
+                    break;
+                method = inStream_readMethodID(in);
+                if ( (serror = inStream_error(in)) != JDWP_ERROR(NONE) )
+                    break;
+                serror = map2jdwpError(
+                        eventFilter_setMethodOnlyFilter(node, i, clazz, method));
+                break;
+            }
+
             case JDWP_REQUEST_MODIFIER(ExceptionOnly): {
                 jclass exception;
                 jboolean caught;

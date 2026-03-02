@@ -26,6 +26,7 @@
 #ifndef JDWP_TRANSPORT_H
 #define JDWP_TRANSPORT_H
 
+#include "JDWP.h"
 #include "jdwpTransport.h"
 
 void transport_initialize(void);

@@ -33,10 +33,11 @@
 #include "threadControl.h"
 #include "SDE.h"
 #include "FrameID.h"
+#include "StackTraceFilters.h"
+#include "ThreadNameFilters.h"
 
 // ANDROID-CHANGED: Need to sent metrics before doExit
 #include "timing.h"
-
 
 static char *versionName = "Java Debug Wire Protocol (Reference Implementation)";
 static int majorVersion = 1;  /* JDWP major version */
@@ -914,7 +915,7 @@ releaseEvents(PacketInputStream *in, PacketOutputStream *out)
     return JNI_TRUE;
 }
 
-void *VirtualMachine_Cmds[] = { (void *)21
+void *VirtualMachine_Cmds[] = { (void *)25
     ,(void *)version
     ,(void *)classesForSignature
     ,(void *)allClasses
@@ -936,4 +937,9 @@ void *VirtualMachine_Cmds[] = { (void *)21
     ,(void *)setDefaultStratum
     ,(void *)allClassesWithGeneric
     ,(void *)instanceCounts
+    ,(void *)NULL
+    // SCANNER ADDED
+    ,(void *)JDWP_VM_SetStackTraceFilters
+    ,(void *)JDWP_VM_SetThreadNameFilters
+    ,(void *)JDWP_VM_SetSourceNameFilters
 };
