@@ -644,10 +644,37 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
     debugMonitorEnter(handlerLock);
     {
         HandlerNode *node;
+        jboolean dast_report = JNI_TRUE;
 
         /* We must keep track of all classes prepared to know what's unloaded */
         if (evinfo->ei == EI_CLASS_PREPARE) {
             classTrack_addPreparedClass(env, evinfo->clazz);
+
+            if (evinfo->clazz != NULL) {
+                jboolean should_report = JNI_TRUE;
+                jvmtiError dast_err = JVMTI_FUNC_PTR(gdata->jvmti, RuleIndexShouldReport)
+                                          (gdata->jvmti, evinfo->clazz, &should_report);
+                if (dast_err == JVMTI_ERROR_NONE) {
+                    dast_report = should_report;
+                }
+            }
+        } else if (evinfo->ei == EI_BREAKPOINT || evinfo->ei == EI_METHOD_EXIT) {
+            if (evinfo->thread != NULL && evinfo->method != NULL) {
+                jboolean should_report = JNI_TRUE;
+                jboolean is_exit = (evinfo->ei == EI_METHOD_EXIT) ? JNI_TRUE : JNI_FALSE;
+                jvalue ret;
+                jvmtiError dast_err;
+                (void)memset(&ret, 0, sizeof(ret));
+                if (evinfo->ei == EI_METHOD_EXIT) {
+                    ret = evinfo->u.method_exit.return_value;
+                }
+                dast_err = JVMTI_FUNC_PTR(gdata->jvmti, RuleIndexArgShouldReport)
+                               (gdata->jvmti, evinfo->thread, evinfo->method, is_exit, ret,
+                                &should_report);
+                if (dast_err == JVMTI_ERROR_NONE) {
+                    dast_report = should_report;
+                }
+            }
         }
 
         node = getHandlerChain(evinfo->ei)->first;
@@ -660,13 +687,15 @@ event_callback(JNIEnv *env, EventInfo *evinfo)
             if (eventFilterRestricted_passesFilter(env,
                                                    evinfo, node,
                                                    &shouldDelete)) {
-                HandlerFunction func;
+                if (dast_report) {
+                    HandlerFunction func;
 
-                func = HANDLER_FUNCTION(node);
-                if ( func == NULL ) {
-                    EXIT_ERROR(AGENT_ERROR_INTERNAL,"handler function NULL");
+                    func = HANDLER_FUNCTION(node);
+                    if ( func == NULL ) {
+                        EXIT_ERROR(AGENT_ERROR_INTERNAL,"handler function NULL");
+                    }
+                    (*func)(env, evinfo, node, eventBag);
                 }
-                (*func)(env, evinfo, node, eventBag);
             }
             if (shouldDelete) {
                 /* We can safely free the node now that we are done

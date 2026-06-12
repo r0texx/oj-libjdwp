@@ -1787,6 +1787,21 @@ typedef struct jvmtiInterface_1_ {
     jint* count,
     jclass** out_types);
 
+  jvmtiError (JNICALL *RuleIndexShouldReport) (jvmtiEnv* env,
+    jclass klass,
+    jboolean* should_report);
+
+  jvmtiError (JNICALL *RuleIndexArgShouldReport) (jvmtiEnv* env,
+    jthread thread,
+    jmethodID method,
+    jboolean is_method_exit,
+    jvalue return_value,
+    jboolean* should_report);
+
+  jvmtiError (JNICALL *RuleIndexLoad) (jvmtiEnv* env,
+    const unsigned char* data,
+    jint len);
+
 } jvmtiInterface_1;
 
 struct _jvmtiEnv {
@@ -2054,6 +2069,25 @@ struct _jvmtiEnv {
     jint* count,
     jclass** out_types) {
     return functions->GetMethodAnnotationTypes(this, mid, count, out_types);
+  }
+
+  jvmtiError RuleIndexShouldReport(jclass klass,
+    jboolean* should_report) {
+    return functions->RuleIndexShouldReport(this, klass, should_report);
+  }
+
+  jvmtiError RuleIndexArgShouldReport(jthread thread,
+    jmethodID method,
+    jboolean is_method_exit,
+    jvalue return_value,
+    jboolean* should_report) {
+    return functions->RuleIndexArgShouldReport(this, thread, method, is_method_exit, return_value,
+                                               should_report);
+  }
+
+  jvmtiError RuleIndexLoad(const unsigned char* data,
+    jint len) {
+    return functions->RuleIndexLoad(this, data, len);
   }
 
   jvmtiError GetLocalInt(jthread thread,

@@ -239,6 +239,53 @@ classTrack_addPreparedClass(JNIEnv *env, jclass klass)
     list = node;
 }
 
+jclass *
+classTrack_findBySignature(JNIEnv *env, const char *signature, jint *count)
+{
+    KlassNode *node;
+    jint matchCount = 0;
+    jlong *tags;
+    jint t;
+    jint objCount = 0;
+    jobject *objects = NULL;
+    jvmtiError error;
+
+    *count = 0;
+
+    for (node = list; node != NULL; node = node->next) {
+        if (node->signature != NULL && strcmp(node->signature, signature) == 0) {
+            matchCount++;
+        }
+    }
+    if (matchCount == 0) {
+        return NULL;
+    }
+
+    tags = jvmtiAllocate(matchCount * (int)sizeof(jlong));
+    if (tags == NULL) {
+        return NULL;
+    }
+    t = 0;
+    for (node = list; node != NULL && t < matchCount; node = node->next) {
+        if (node->signature != NULL && strcmp(node->signature, signature) == 0) {
+            tags[t++] = node->klass_tag;
+        }
+    }
+
+    error = JVMTI_FUNC_PTR(trackingEnv,GetObjectsWithTags)
+                (trackingEnv, matchCount, tags, &objCount, &objects, NULL);
+    jvmtiDeallocate(tags);
+    if (error != JVMTI_ERROR_NONE || objCount == 0) {
+        if (objects != NULL) {
+            jvmtiDeallocate(objects);
+        }
+        return NULL;
+    }
+
+    *count = objCount;
+    return (jclass *)objects;
+}
+
 static jboolean
 setupEvents()
 {

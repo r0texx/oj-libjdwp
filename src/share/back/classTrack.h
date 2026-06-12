@@ -39,6 +39,9 @@ classTrack_processUnloads(JNIEnv *env);
 void
 classTrack_addPreparedClass(JNIEnv *env, jclass klass);
 
+jclass *
+classTrack_findBySignature(JNIEnv *env, const char *signature, jint *count);
+
 /*
  * Initialize class tracking.
  */
