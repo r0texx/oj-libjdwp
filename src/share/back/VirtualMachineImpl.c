@@ -30,11 +30,13 @@
 #include "outStream.h"
 #include "eventHandler.h"
 #include "eventHelper.h"
+#include "classTrack.h"
 #include "threadControl.h"
 #include "SDE.h"
 #include "FrameID.h"
 #include "StackTraceFilters.h"
 #include "ThreadNameFilters.h"
+#include "RuleIndexCmd.h"
 
 // ANDROID-CHANGED: Need to sent metrics before doExit
 #include "timing.h"
@@ -125,72 +127,29 @@ classesForSignature(PacketInputStream *in, PacketOutputStream *out)
 
     WITH_LOCAL_REFS(env, 1) {
 
-        jint classCount;
+        jint matchCount = 0;
         jclass *theClasses;
-        jvmtiError error;
+        int writtenCount = 0;
 
-        error = allLoadedClasses(&theClasses, &classCount);
-        if ( error == JVMTI_ERROR_NONE ) {
-            /* Count classes in theClasses which match signature */
-            int matchCount = 0;
-            /* Count classes written to the JDWP connection */
-            int writtenCount = 0;
-            int i;
+        eventHandler_lock();
+        theClasses = classTrack_findBySignature(env, signature, &matchCount);
+        eventHandler_unlock();
 
-            for (i=0; i<classCount; i++) {
-                jclass clazz = theClasses[i];
-                jint status = classStatus(clazz);
-                char *candidate_signature = NULL;
-                jint wanted =
-                    (JVMTI_CLASS_STATUS_PREPARED|JVMTI_CLASS_STATUS_ARRAY|
-                     JVMTI_CLASS_STATUS_PRIMITIVE);
-
-                /* We want prepared classes, primitives, and arrays only */
-                if ((status & wanted) == 0) {
-                    continue;
-                }
-
-                error = classSignature(clazz, &candidate_signature, NULL);
-                if (error != JVMTI_ERROR_NONE) {
-                    break;
-                }
-
-                if (strcmp(candidate_signature, signature) == 0) {
-                    /* Float interesting classes (those that
-                     * are matching and are prepared) to the
-                     * beginning of the array.
-                     */
-                    theClasses[i] = theClasses[matchCount];
-                    theClasses[matchCount++] = clazz;
-                }
-                jvmtiDeallocate(candidate_signature);
+        (void)outStream_writeInt(out, matchCount);
+        for (; writtenCount < matchCount; writtenCount++) {
+            jclass clazz = theClasses[writtenCount];
+            jint status = classStatus(clazz);
+            jbyte tag = referenceTypeTag(clazz);
+            (void)outStream_writeByte(out, tag);
+            (void)outStream_writeObjectRef(env, out, clazz);
+            (void)outStream_writeInt(out, map2jdwpClassStatus(status));
+            if (outStream_error(out)) {
+                break;
             }
-
-            /* At this point matching prepared classes occupy
-             * indicies 0 thru matchCount-1 of theClasses.
-             */
-
-            if ( error ==  JVMTI_ERROR_NONE ) {
-                (void)outStream_writeInt(out, matchCount);
-                for (; writtenCount < matchCount; writtenCount++) {
-                    jclass clazz = theClasses[writtenCount];
-                    jint status = classStatus(clazz);
-                    jbyte tag = referenceTypeTag(clazz);
-                    (void)outStream_writeByte(out, tag);
-                    (void)outStream_writeObjectRef(env, out, clazz);
-                    (void)outStream_writeInt(out, map2jdwpClassStatus(status));
-                    /* No point in continuing if there's an error */
-                    if (outStream_error(out)) {
-                        break;
-                    }
-                }
-            }
-
-            jvmtiDeallocate(theClasses);
         }
 
-        if ( error != JVMTI_ERROR_NONE ) {
-            outStream_setError(out, map2jdwpError(error));
+        if (theClasses != NULL) {
+            jvmtiDeallocate(theClasses);
         }
 
     } END_WITH_LOCAL_REFS(env);
@@ -915,7 +874,7 @@ releaseEvents(PacketInputStream *in, PacketOutputStream *out)
     return JNI_TRUE;
 }
 
-void *VirtualMachine_Cmds[] = { (void *)25
+void *VirtualMachine_Cmds[] = { (void *)26
     ,(void *)version
     ,(void *)classesForSignature
     ,(void *)allClasses
@@ -942,4 +901,5 @@ void *VirtualMachine_Cmds[] = { (void *)25
     ,(void *)JDWP_VM_SetStackTraceFilters
     ,(void *)JDWP_VM_SetThreadNameFilters
     ,(void *)JDWP_VM_SetSourceNameFilters
+    ,(void *)JDWP_VM_LoadRuleIndex
 };
