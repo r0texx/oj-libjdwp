@@ -102,6 +102,19 @@ typedef struct MethodFilter {
     jmethodID method;
 } MethodFilter;
 
+// SCANNER ADDED
+typedef struct ClassSetEntry {
+    char *name;
+    struct ClassSetEntry *next;
+} ClassSetEntry;
+
+// SCANNER ADDED
+typedef struct ClassSetFilter {
+    ClassSetEntry **buckets;
+    jint bucketCount;
+    jint count;
+} ClassSetFilter;
+
 typedef struct Filter_ {
     jbyte modifier;
     union {
@@ -120,6 +133,7 @@ typedef struct Filter_ {
 
         // SCANNER ADDED
         struct MethodFilter MethodOnly;
+        struct ClassSetFilter ClassSetExclude;
     } u;
 } Filter;
 
@@ -258,6 +272,21 @@ clearFilters(HandlerNode *node)
             case JDWP_REQUEST_MODIFIER(MethodOnly):
                 tossGlobalRef(env, &(filter->u.MethodOnly.clazz));
                 break;
+            // SCANNER ADDED
+            case JDWP_REQUEST_MODIFIER(ClassSetExclude): {
+                jint b;
+                for (b = 0; b < filter->u.ClassSetExclude.bucketCount; ++b) {
+                    ClassSetEntry *e = filter->u.ClassSetExclude.buckets[b];
+                    while (e != NULL) {
+                        ClassSetEntry *next = e->next;
+                        jvmtiDeallocate(e->name);
+                        jvmtiDeallocate(e);
+                        e = next;
+                    }
+                }
+                jvmtiDeallocate(filter->u.ClassSetExclude.buckets);
+                break;
+            }
         }
     }
     if (error == JVMTI_ERROR_NONE) {
@@ -305,6 +334,34 @@ patternStringMatch(char *classname, const char *pattern)
             return strncmp(pattern, start, compLen) == 0;
         }
     }
+}
+
+// SCANNER ADDED
+static unsigned long classSetHash(const char *s)
+{
+    unsigned long h = 5381;
+    int c;
+    while ((c = (unsigned char)*s++) != 0) {
+        h = ((h << 5) + h) + (unsigned long)c;
+    }
+    return h;
+}
+
+// SCANNER ADDED
+static jboolean classSetContains(const ClassSetFilter *set, const char *name)
+{
+    ClassSetEntry *e;
+    if (set->buckets == NULL || set->bucketCount <= 0) {
+        return JNI_FALSE;
+    }
+    e = set->buckets[classSetHash(name) & (unsigned long)(set->bucketCount - 1)];
+    while (e != NULL) {
+        if (strcmp(e->name, name) == 0) {
+            return JNI_TRUE;
+        }
+        e = e->next;
+    }
+    return JNI_FALSE;
 }
 
 static jboolean isVersionGte12x() {
@@ -539,6 +596,21 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
             break;
         }
 
+        // SCANNER ADDED
+        case JDWP_REQUEST_MODIFIER(ClassSetExclude): {
+            char* classname = getClassname(clazz);
+            jboolean excluded = JNI_FALSE;
+            if (classname != NULL) {
+                excluded = classSetContains(&filter->u.ClassSetExclude, classname);
+            }
+            jvmtiDeallocate(classname);
+
+            if (excluded) {
+                return JNI_FALSE;
+            }
+            break;
+        }
+
         case JDWP_REQUEST_MODIFIER(Step):
                 if (!isSameObject(env, thread, filter->u.Step.thread)) {
                     return JNI_FALSE;
@@ -596,6 +668,25 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
         }
         if (JDWP_ShouldSuppressForStack(env, evinfo, thread)) {
             return JNI_FALSE;
+        }
+    }
+
+    // SCANNER ADDED
+    if (evinfo->ei == EI_BREAKPOINT || evinfo->ei == EI_METHOD_EXIT) {
+        if (thread != NULL && method != NULL) {
+            jboolean should_report = JNI_TRUE;
+            jboolean is_exit = (evinfo->ei == EI_METHOD_EXIT) ? JNI_TRUE : JNI_FALSE;
+            jvalue ret;
+            jvmtiError dast_err;
+            (void)memset(&ret, 0, sizeof(ret));
+            if (evinfo->ei == EI_METHOD_EXIT) {
+                ret = evinfo->u.method_exit.return_value;
+            }
+            dast_err = JVMTI_FUNC_PTR(gdata->jvmti, RuleIndexArgShouldReport)
+                           (gdata->jvmti, thread, method, is_exit, ret, &should_report);
+            if (dast_err == JVMTI_ERROR_NONE && !should_report) {
+                return JNI_FALSE;
+            }
         }
     }
 
@@ -992,6 +1083,64 @@ eventFilter_setClassExcludeFilter(HandlerNode *node, jint index,
     FILTER(node, index).modifier =
                        JDWP_REQUEST_MODIFIER(ClassExclude);
     filter->classPattern = classPattern;
+    return JVMTI_ERROR_NONE;
+}
+
+// SCANNER ADDED
+jvmtiError
+eventFilter_setClassSetExcludeFilter(HandlerNode *node, jint index,
+                                     char **names, jint count)
+{
+    ClassSetFilter *filter = &FILTER(node, index).u.ClassSetExclude;
+    jint buckets;
+    jint k;
+    if (index >= FILTER_COUNT(node)) {
+        return AGENT_ERROR_ILLEGAL_ARGUMENT;
+    }
+    if (
+        (NODE_EI(node) == EI_THREAD_START) ||
+        (NODE_EI(node) == EI_THREAD_END)) {
+
+        return AGENT_ERROR_ILLEGAL_ARGUMENT;
+    }
+
+    filter->buckets = NULL;
+    filter->bucketCount = 0;
+    filter->count = 0;
+
+    if (count > 0) {
+        buckets = 16;
+        while (buckets < count) {
+            buckets <<= 1;
+        }
+        filter->buckets = jvmtiAllocate(buckets * (int)sizeof(ClassSetEntry*));
+        if (filter->buckets == NULL) {
+            for (k = 0; k < count; ++k) {
+                jvmtiDeallocate(names[k]);
+            }
+            jvmtiDeallocate(names);
+            return AGENT_ERROR_OUT_OF_MEMORY;
+        }
+        (void)memset(filter->buckets, 0, buckets * (int)sizeof(ClassSetEntry*));
+        filter->bucketCount = buckets;
+        for (k = 0; k < count; ++k) {
+            ClassSetEntry *entry = jvmtiAllocate((int)sizeof(ClassSetEntry));
+            unsigned long slot;
+            if (entry == NULL) {
+                jvmtiDeallocate(names[k]);
+                continue;
+            }
+            entry->name = names[k];
+            slot = classSetHash(names[k]) & (unsigned long)(buckets - 1);
+            entry->next = filter->buckets[slot];
+            filter->buckets[slot] = entry;
+            filter->count++;
+        }
+    }
+    jvmtiDeallocate(names);
+
+    FILTER(node, index).modifier =
+                       JDWP_REQUEST_MODIFIER(ClassSetExclude);
     return JVMTI_ERROR_NONE;
 }
 

@@ -2472,6 +2472,15 @@ JDWP "Java(tm) Debug Wire Protocol"
 
                         (method methodID "Method ID.")
                     )
+                    (Alt ClassSetExclude=15
+                        "Restricts reported events to those for classes whose name "
+                        "is not contained in the given set of exact class names. "
+                        "Equivalent to a batch of ClassExclude modifiers with exact "
+                        "(non-wildcard) names, matched as a set. "
+
+                        (Repeat names "Number of excluded class names that follow."
+                                (string name "One excluded class name (exact match).") )
+                    )
 
                 )
             )

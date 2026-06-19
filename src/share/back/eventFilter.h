@@ -81,4 +81,10 @@ jvmtiError eventFilter_setMethodOnlyFilter(HandlerNode *node,
                                     jclass clazz,
                                     jmethodID method);
 
+// SCANNER ADDED
+jvmtiError eventFilter_setClassSetExcludeFilter(HandlerNode *node,
+                                    jint index,
+                                    char **names,
+                                    jint count);
+
 #endif /* _EVENT_FILTER_H */

@@ -194,6 +194,41 @@ readAndSetFilters(JNIEnv *env, PacketInputStream *in, HandlerNode *node,
                         eventFilter_setClassExcludeFilter(node, i, pattern));
                 break;
             }
+            /* SCANNER ADDED */
+            case JDWP_REQUEST_MODIFIER(ClassSetExclude): {
+                jint nameCount;
+                char **names;
+                jint k;
+                nameCount = inStream_readInt(in);
+                if ( (serror = inStream_error(in)) != JDWP_ERROR(NONE) )
+                    break;
+                if (nameCount < 0) {
+                    serror = JDWP_ERROR(ILLEGAL_ARGUMENT);
+                    break;
+                }
+                names = (nameCount > 0)
+                        ? jvmtiAllocate(nameCount * (int)sizeof(char*)) : NULL;
+                if (nameCount > 0 && names == NULL) {
+                    serror = JDWP_ERROR(OUT_OF_MEMORY);
+                    break;
+                }
+                for (k = 0; k < nameCount; ++k) {
+                    names[k] = inStream_readString(in);
+                    if ( (serror = inStream_error(in)) != JDWP_ERROR(NONE) )
+                        break;
+                }
+                if (serror != JDWP_ERROR(NONE)) {
+                    jint m;
+                    for (m = 0; m < k; ++m) {
+                        jvmtiDeallocate(names[m]);
+                    }
+                    jvmtiDeallocate(names);
+                    break;
+                }
+                serror = map2jdwpError(
+                        eventFilter_setClassSetExcludeFilter(node, i, names, nameCount));
+                break;
+            }
             case JDWP_REQUEST_MODIFIER(Step): {
                 jthread thread;
                 jint size;
