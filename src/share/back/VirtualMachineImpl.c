@@ -260,6 +260,124 @@ allClassesWithGeneric(PacketInputStream *in, PacketOutputStream *out)
     return allClasses1(in, out, 1);
 }
 
+// SCANNER ADDED
+// Like allClasses, but each prepared class is run through the RuleIndex class filter.
+// Only matching classes are written to the reply; the names of dropped classes are
+// merged into one non-suspending IGNORED_CLASSES event so the host can negative-cache
+// them. Requires the rule index to be loaded first (VirtualMachine.LoadRuleIndex);
+// if it is not active, RuleIndexShouldReport reports every class and this behaves like
+// allClasses with no event.
+static jboolean
+allClassesFiltered(PacketInputStream *in, PacketOutputStream *out)
+{
+    JNIEnv *env;
+
+    if (gdata->vmDead) {
+        outStream_setError(out, JDWP_ERROR(VM_DEAD));
+        return JNI_TRUE;
+    }
+
+    env = getEnv();
+
+    WITH_LOCAL_REFS(env, 1) {
+
+        jint classCount;
+        jclass *theClasses;
+        jvmtiError error;
+
+        error = allLoadedClasses(&theClasses, &classCount);
+        if ( error != JVMTI_ERROR_NONE ) {
+            outStream_setError(out, map2jdwpError(error));
+        } else {
+            int prepCount = 0;
+            int i;
+            jboolean *matched;
+            char **ignoredNames;
+            jint ignoredCount = 0;
+
+            for (i=0; i<classCount; i++) {
+                jclass clazz = theClasses[i];
+                jint status = classStatus(clazz);
+                jint wanted =
+                    (JVMTI_CLASS_STATUS_PREPARED|JVMTI_CLASS_STATUS_ARRAY);
+                if ((status & wanted) != 0) {
+                    theClasses[i] = theClasses[prepCount];
+                    theClasses[prepCount++] = clazz;
+                }
+            }
+
+            matched = jvmtiAllocate(prepCount > 0 ? prepCount * (int)sizeof(jboolean) : 1);
+            ignoredNames = jvmtiAllocate(prepCount > 0 ? prepCount * (int)sizeof(char*) : 1);
+            if (matched == NULL || ignoredNames == NULL) {
+                jvmtiDeallocate(matched);
+                jvmtiDeallocate(ignoredNames);
+                outStream_setError(out, JDWP_ERROR(OUT_OF_MEMORY));
+            } else {
+                int matchedCount = 0;
+
+                for (i=0; i<prepCount; i++) {
+                    jclass clazz = theClasses[i];
+                    jboolean should_report = JNI_TRUE;
+                    jvmtiError ferr = JVMTI_FUNC_PTR(gdata->jvmti, RuleIndexShouldReport)
+                                          (gdata->jvmti, clazz, &should_report);
+                    if (ferr == JVMTI_ERROR_NONE && !should_report) {
+                        char *name = getClassname(clazz);
+                        if (name != NULL) {
+                            ignoredNames[ignoredCount++] = name;
+                        }
+                        matched[i] = JNI_FALSE;
+                    } else {
+                        matched[i] = JNI_TRUE;
+                        matchedCount++;
+                    }
+                }
+
+                (void)outStream_writeInt(out, matchedCount);
+                for (i=0; i<prepCount; i++) {
+                    char *signature = NULL;
+                    jclass clazz;
+                    jint status;
+                    jbyte tag;
+                    jvmtiError serr;
+
+                    if (!matched[i]) {
+                        continue;
+                    }
+                    clazz = theClasses[i];
+                    status = classStatus(clazz);
+                    tag = referenceTypeTag(clazz);
+                    serr = classSignature(clazz, &signature, NULL);
+                    if (serr != JVMTI_ERROR_NONE) {
+                        outStream_setError(out, map2jdwpError(serr));
+                        break;
+                    }
+                    (void)outStream_writeByte(out, tag);
+                    (void)outStream_writeObjectRef(env, out, clazz);
+                    (void)outStream_writeString(out, signature);
+                    (void)outStream_writeInt(out, map2jdwpClassStatus(status));
+                    jvmtiDeallocate(signature);
+                    if (outStream_error(out)) {
+                        break;
+                    }
+                }
+
+                if (ignoredCount > 0) {
+                    eventHelper_reportIgnoredClasses(env, ignoredNames, ignoredCount);
+                }
+                for (i=0; i<ignoredCount; i++) {
+                    jvmtiDeallocate(ignoredNames[i]);
+                }
+                jvmtiDeallocate(matched);
+                jvmtiDeallocate(ignoredNames);
+            }
+            jvmtiDeallocate(theClasses);
+        }
+
+    } END_WITH_LOCAL_REFS(env);
+
+    return JNI_TRUE;
+}
+
   /***********************************************************/
 
 
@@ -874,7 +992,7 @@ releaseEvents(PacketInputStream *in, PacketOutputStream *out)
     return JNI_TRUE;
 }
 
-void *VirtualMachine_Cmds[] = { (void *)26
+void *VirtualMachine_Cmds[] = { (void *)27
     ,(void *)version
     ,(void *)classesForSignature
     ,(void *)allClasses
@@ -902,4 +1020,5 @@ void *VirtualMachine_Cmds[] = { (void *)26
     ,(void *)JDWP_VM_SetThreadNameFilters
     ,(void *)JDWP_VM_SetSourceNameFilters
     ,(void *)JDWP_VM_LoadRuleIndex
+    ,(void *)allClassesFiltered
 };

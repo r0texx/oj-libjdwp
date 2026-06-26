@@ -3182,6 +3182,7 @@ JDWP "Java(tm) Debug Wire Protocol"
     (Constant VM_INIT                =90  "obsolete - was used in jvmdi")
     (Constant VM_DEATH               =99  )
     (Constant VM_DISCONNECTED        =100 "Never sent across JDWP")
+    (Constant IGNORED_CLASSES        =111 "SCANNER ADDED: batch of class names dropped by the RuleIndex class filter")
 )
 
 (ConstantSet ThreadStatus

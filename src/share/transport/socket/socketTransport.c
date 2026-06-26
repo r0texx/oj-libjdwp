@@ -387,6 +387,11 @@ socketTransport_accept(jdwpTransportEnv* env, jlong acceptTimeout, jlong handsha
             return JDWPTRANSPORT_ERROR_IO_ERROR;
         }
 
+        /* SCANNER ADDED: TCP_NODELAY is not reliably inherited by the accepted socket
+         * from the listening socket across platforms; set it explicitly so replies are
+         * not delayed by Nagle on the many small request/reply round-trips. */
+        (void)setOptions(socketFD);
+
         /* handshake with the debugger */
         err = handshake(socketFD, handshakeTimeout);
 

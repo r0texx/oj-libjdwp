@@ -34,6 +34,7 @@
 
 #include "util.h"
 #include "eventFilter.h"
+#include "eventHelper.h"
 #include "eventFilterRestricted.h"
 #include "eventHandlerRestricted.h"
 #include "stepControl.h"
@@ -364,6 +365,108 @@ static jboolean classSetContains(const ClassSetFilter *set, const char *name)
     return JNI_FALSE;
 }
 
+// SCANNER ADDED
+// Append a pointer to a jvmtiAllocate-backed array, growing it as needed. Returns
+// JNI_FALSE only on allocation failure (the array is left unchanged).
+static jboolean
+ptrArrayPush(void ***arr, jint *cap, jint *count, void *item)
+{
+    if (*count == *cap) {
+        jint newCap = (*cap == 0) ? 64 : (*cap * 2);
+        void **grown = jvmtiAllocate(newCap * (int)sizeof(void *));
+        if (grown == NULL) {
+            return JNI_FALSE;
+        }
+        if (*arr != NULL) {
+            (void)memcpy(grown, *arr, (size_t)(*count) * sizeof(void *));
+            jvmtiDeallocate(*arr);
+        }
+        *arr = grown;
+        *cap = newCap;
+    }
+    (*arr)[(*count)++] = item;
+    return JNI_TRUE;
+}
+
+// SCANNER ADDED
+// Report a class dropped by the RuleIndex class filter, together with its whole
+// supertype hierarchy (superclasses + implemented interfaces), as one non-suspending
+// IGNORED_CLASSES event so the host can cache the names for future sessions. The
+// worklist and name set grow dynamically, so there is no bound on hierarchy size.
+static void
+reportIgnoredClassHierarchy(JNIEnv *env, jclass startClass)
+{
+    char **names = NULL;
+    jclass *worklist = NULL;
+    jint nameCap = 0, nameCount = 0;
+    jint wlCap = 0, wlCount = 0;
+    jint i, j;
+
+    if (!ptrArrayPush((void ***)&worklist, &wlCap, &wlCount,
+                      (void *)JNI_FUNC_PTR(env, NewLocalRef)(env, startClass))) {
+        return;
+    }
+
+    while (wlCount > 0) {
+        jclass c = worklist[--wlCount];
+        char *name;
+        jboolean dup = JNI_FALSE;
+
+        if (c == NULL) {
+            continue;
+        }
+
+        name = getClassname(c);
+        if (name != NULL) {
+            for (j = 0; j < nameCount; j++) {
+                if (strcmp(names[j], name) == 0) {
+                    dup = JNI_TRUE;
+                    break;
+                }
+            }
+        }
+
+        if (name == NULL || dup || !ptrArrayPush((void ***)&names, &nameCap, &nameCount, name)) {
+            if (name != NULL) {
+                jvmtiDeallocate(name);
+            }
+            JNI_FUNC_PTR(env, DeleteLocalRef)(env, c);
+            continue;
+        }
+
+        {
+            jclass super = JNI_FUNC_PTR(env, GetSuperclass)(env, c);
+            if (super != NULL &&
+                !ptrArrayPush((void ***)&worklist, &wlCap, &wlCount, (void *)super)) {
+                JNI_FUNC_PTR(env, DeleteLocalRef)(env, super);
+            }
+        }
+        {
+            jint ifaceCount = 0;
+            jclass *ifaces = NULL;
+            if (JVMTI_FUNC_PTR(gdata->jvmti, GetImplementedInterfaces)
+                    (gdata->jvmti, c, &ifaceCount, &ifaces) == JVMTI_ERROR_NONE) {
+                for (i = 0; i < ifaceCount; i++) {
+                    if (!ptrArrayPush((void ***)&worklist, &wlCap, &wlCount, (void *)ifaces[i])) {
+                        JNI_FUNC_PTR(env, DeleteLocalRef)(env, ifaces[i]);
+                    }
+                }
+                jvmtiDeallocate(ifaces);
+            }
+        }
+        JNI_FUNC_PTR(env, DeleteLocalRef)(env, c);
+    }
+
+    if (nameCount > 0) {
+        eventHelper_reportIgnoredClasses(env, names, nameCount);
+    }
+    for (j = 0; j < nameCount; j++) {
+        jvmtiDeallocate(names[j]);
+    }
+    jvmtiDeallocate(names);
+    jvmtiDeallocate(worklist);
+}
+
 static jboolean isVersionGte12x() {
     jint version;
     jvmtiError err =
@@ -687,6 +790,21 @@ eventFilterRestricted_passesFilter(JNIEnv *env,
             if (dast_err == JVMTI_ERROR_NONE && !should_report) {
                 return JNI_FALSE;
             }
+        }
+    }
+
+    // SCANNER ADDED
+    // RuleIndex class filter for class-prepare: a class that matches no rule is dropped
+    // (no thread stop) and its hierarchy is pushed to the host via IGNORED_CLASSES so it
+    // lands in the negative cache. Classes already known-ignored were dropped earlier by
+    // the ClassSetExclude modifier and never reach here.
+    if (evinfo->ei == EI_CLASS_PREPARE && clazz != NULL) {
+        jboolean should_report = JNI_TRUE;
+        jvmtiError dast_err = JVMTI_FUNC_PTR(gdata->jvmti, RuleIndexShouldReport)
+                                  (gdata->jvmti, clazz, &should_report);
+        if (dast_err == JVMTI_ERROR_NONE && !should_report) {
+            reportIgnoredClassHierarchy(env, clazz);
+            return JNI_FALSE;
         }
     }
 

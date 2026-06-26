@@ -44,6 +44,8 @@ void eventHelper_recordFrameEvent(jint id, jbyte suspendPolicy, EventIndex ei,
                                   struct bag *eventBag);
 
 jbyte eventHelper_reportEvents(jbyte sessionID, struct bag *eventBag);
+// SCANNER ADDED
+void eventHelper_reportIgnoredClasses(JNIEnv *env, char **classNames, jint count);
 void eventHelper_reportInvokeDone(jbyte sessionID, jthread thread);
 void eventHelper_reportVMInit(JNIEnv *env, jbyte sessionID, jthread thread, jbyte suspendPolicy);
 void eventHelper_suspendThread(jbyte sessionID, jthread thread);

@@ -556,6 +556,36 @@ handleReportEventCompositeCommand(JNIEnv *env,
     outStream_destroy(&out);
 }
 
+// SCANNER ADDED
+// Push a single non-suspending IGNORED_CLASSES composite event carrying a batch of
+// class names that the RuleIndex class filter dropped. requestID is 0 (unsolicited,
+// delivered to the debugger as a client event without a matching EventRequest).
+void
+eventHelper_reportIgnoredClasses(JNIEnv *env, char **classNames, jint count)
+{
+    PacketOutputStream out;
+    jint i;
+
+    (void)env;
+    if (count <= 0) {
+        return;
+    }
+
+    outStream_initCommand(&out, uniqueID(), 0x0,
+                          JDWP_COMMAND_SET(Event),
+                          JDWP_COMMAND(Event, Composite));
+    (void)outStream_writeByte(&out, JDWP_SUSPEND_POLICY(NONE));
+    (void)outStream_writeInt(&out, 1);
+    (void)outStream_writeByte(&out, JDWP_EVENT(IGNORED_CLASSES));
+    (void)outStream_writeInt(&out, 0);
+    (void)outStream_writeInt(&out, count);
+    for (i = 0; i < count; i++) {
+        (void)outStream_writeString(&out, classNames[i]);
+    }
+    outStream_sendCommand(&out);
+    outStream_destroy(&out);
+}
+
 static void
 handleReportInvokeDoneCommand(JNIEnv* env, ReportInvokeDoneCommand *command)
 {
